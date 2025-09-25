@@ -58,7 +58,7 @@
     const log = (m) => { logEl.textContent += m + "\n"; };
 
     // Prefer WebGPU; ORT will fall back to WASM automatically if needed
-    setExecutionProviders(['webgpu','wasm']);
+    setExecutionProviders(['wasm']);
 
     // Basic UX init
     uiInit({ inpaintBatch: inpaintUpperRightBatch, statusEl });
@@ -106,3 +106,4 @@
   </script>
 </body>
 </html>
+
