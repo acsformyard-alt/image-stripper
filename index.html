@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Upper-Right Text Remover — LaMa (Local)</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- OnnxRuntime Web (WebGPU build). For fully-offline use, download to /lib and change src to ./lib/ort.webgpu.min.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.22.0/ort.webgpu.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Upper-Right Text Remover (Local, LaMa)</h1>
+    <p class="muted">
+      100% local. Ships with <code>models/lama_fp32.onnx</code>. Auto-loads on <code>http/https</code>; on <code>file://</code> most browsers block local fetch, so you’ll be prompted to pick the model once.
+    </p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <!-- Model picker (fallback for file://); stays visible so you can swap models if you want -->
+      <label class="btn">
+        <input id="modelInput" type="file" accept=".onnx" />
+        Choose LaMa model (.onnx)
+      </label>
+
+      <label class="btn">
+        <input id="fileInput" type="file" accept="image/*" multiple />
+        Choose images
+      </label>
+
+      <button id="processBtn" class="primary">Process</button>
+      <span id="status" class="status">Loading…</span>
+
+      <!-- Selection/readiness indicators -->
+      <span class="pill" id="modelName">No model selected</span>
+      <span class="pill" id="imagesInfo">No images</span>
+    </section>
+
+    <section>
+      <div id="gallery" class="gallery"></div>
+    </section>
+  </main>
+
+  <!-- Global spinner -->
+  <div id="globalSpinner" class="spinner" aria-hidden="true"></div>
+
+  <script type="module">
+    import { initLamaFromBuffer, initLamaFromUrl, inpaintUpperRightBatch, setExecutionProviders } from './js/lama.js';
+    import { uiInit, setModelLabel, setBusy, wireImagePicker } from './js/app.js';
+
+    // Prefer WebGPU, then WASM (so file:// works no matter what)
+    setExecutionProviders(['webgpu', 'wasm']);
+
+    const statusEl   = document.getElementById('status');
+    const modelInput = document.getElementById('modelInput');
+
+    // Initialize UI (image selection pill, spinner, progress)
+    uiInit({ inpaintBatch: inpaintUpperRightBatch, statusEl });
+    wireImagePicker();
+
+    // Try to auto-load the bundled model when NOT on file://
+    (async () => {
+      const BUNDLED_URL = './models/lama_fp32.onnx';
+      if (location.protocol !== 'file:') {
+        try {
+          setBusy(true, 'Loading bundled model…');
+          await initLamaFromUrl(BUNDLED_URL);
+          setModelLabel('models/lama_fp32.onnx');
+          statusEl.textContent = 'Model ready.';
+        } catch (e) {
+          console.warn('Auto-load failed, you can pick the model manually.', e);
+          statusEl.textContent = 'Pick model, then images.';
+        } finally {
+          setBusy(false);
+        }
+      } else {
+        statusEl.textContent = 'Pick model, then images.';
+      }
+    })();
+
+    // Manual model loading (works on file:// because we read bytes from the input)
+    modelInput.addEventListener('change', async () => {
+      const f = modelInput.files?.[0];
+      if (!f) return;
+      setModelLabel(f.name);
+      statusEl.textContent = 'Reading ONNX…';
+      try {
+        setBusy(true, 'Initializing LaMa…');
+        const buf = await f.arrayBuffer();
+        await initLamaFromBuffer(new Uint8Array(buf));
+        statusEl.textContent = 'Model ready.';
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = 'Failed to initialize model: ' + (e.message || e);
+      } finally {
+        setBusy(false);
+      }
+    });
+  </script>
+</body>
+</html>
