@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Upper-Right Text Remover — LaMa (Local)</title>
-  <link rel="stylesheet" href="styles.css" />
-  <!-- OnnxRuntime Web (WebGPU build). For fully-offline use, download to /lib and change src to ./lib/ort.webgpu.min.js -->
+  <title>Upper-Right Text Remover — LaMa (Local model, Cloudflare Pages)</title>
+  <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.22.0/ort.webgpu.min.js"></script>
+
 </head>
 <body>
   <header>
-    <h1>Upper-Right Text Remover (Local, LaMa)</h1>
+    <h1>Upper-Right Text Remover (Local LaMa model)</h1>
     <p class="muted">
-      100% local. Ships with <code>models/lama_fp32.onnx</code>. Auto-loads on <code>http/https</code>; on <code>file://</code> most browsers block local fetch, so you’ll be prompted to pick the model once.
+      Deployed on Cloudflare Pages. Select a <code>.onnx</code> model from your computer (not uploaded), then pick images.
+      WebGPU runs because the site is HTTPS; nothing leaves your device.
     </p>
   </header>
 
   <main>
     <section class="controls">
-      <!-- Model picker (fallback for file://); stays visible so you can swap models if you want -->
       <label class="btn">
         <input id="modelInput" type="file" accept=".onnx" />
         Choose LaMa model (.onnx)
@@ -29,10 +29,9 @@
         Choose images
       </label>
 
-      <button id="processBtn" class="primary">Process</button>
-      <span id="status" class="status">Loading…</span>
+      <button id="processBtn" class="primary" disabled>Process</button>
+      <span id="status" class="status">Pick model, then images.</span>
 
-      <!-- Selection/readiness indicators -->
       <span class="pill" id="modelName">No model selected</span>
       <span class="pill" id="imagesInfo">No images</span>
     </section>
@@ -42,61 +41,68 @@
     </section>
   </main>
 
-  <!-- Global spinner -->
   <div id="globalSpinner" class="spinner" aria-hidden="true"></div>
 
-  <script type="module">
-    import { initLamaFromBuffer, initLamaFromUrl, inpaintUpperRightBatch, setExecutionProviders } from './js/lama.js';
-    import { uiInit, setModelLabel, setBusy, wireImagePicker } from './js/app.js';
+  <pre id="log" class="log"></pre>
 
-    // Prefer WebGPU, then WASM (so file:// works no matter what)
-    setExecutionProviders(['webgpu', 'wasm']);
+  <script type="module">
+    import { initLamaFromBuffer, inpaintUpperRightBatch, setExecutionProviders } from '/js/lama.js';
+    import { uiInit, setModelLabel, setBusy, wireImagePicker } from '/js/app.js';
 
     const statusEl   = document.getElementById('status');
     const modelInput = document.getElementById('modelInput');
+    const modelName  = document.getElementById('modelName');
+    const processBtn = document.getElementById('processBtn');
+    const logEl      = document.getElementById('log');
 
-    // Initialize UI (image selection pill, spinner, progress)
+    const log = (m) => { logEl.textContent += m + "\n"; };
+
+    // Prefer WebGPU; ORT will fall back to WASM automatically if needed
+    setExecutionProviders(['webgpu','wasm']);
+
+    // Basic UX init
     uiInit({ inpaintBatch: inpaintUpperRightBatch, statusEl });
     wireImagePicker();
 
-    // Try to auto-load the bundled model when NOT on file://
-    (async () => {
-      const BUNDLED_URL = './models/lama_fp32.onnx';
-      if (location.protocol !== 'file:') {
-        try {
-          setBusy(true, 'Loading bundled model…');
-          await initLamaFromUrl(BUNDLED_URL);
-          setModelLabel('models/lama_fp32.onnx');
-          statusEl.textContent = 'Model ready.';
-        } catch (e) {
-          console.warn('Auto-load failed, you can pick the model manually.', e);
-          statusEl.textContent = 'Pick model, then images.';
-        } finally {
-          setBusy(false);
-        }
-      } else {
-        statusEl.textContent = 'Pick model, then images.';
-      }
-    })();
+    // Safety: enable Process only when both model + at least one image are selected
+    const filesInput = document.getElementById('fileInput');
+    const syncProcessEnabled = () => {
+      const hasModel  = modelName.textContent !== 'No model selected';
+      const hasImages = filesInput.files && filesInput.files.length > 0;
+      processBtn.disabled = !(hasModel && hasImages);
+    };
+    filesInput.addEventListener('change', syncProcessEnabled);
 
-    // Manual model loading (works on file:// because we read bytes from the input)
+    // Manual model loading from local disk (no fetch, no 25MB limit)
     modelInput.addEventListener('change', async () => {
       const f = modelInput.files?.[0];
       if (!f) return;
       setModelLabel(f.name);
-      statusEl.textContent = 'Reading ONNX…';
+      syncProcessEnabled();
       try {
-        setBusy(true, 'Initializing LaMa…');
+        setBusy(true, 'Reading model…');
         const buf = await f.arrayBuffer();
+        setBusy(true, 'Initializing LaMa…');
         await initLamaFromBuffer(new Uint8Array(buf));
-        statusEl.textContent = 'Model ready.';
+        statusEl.textContent = 'Model ready. Choose images.';
+        log('Model initialized: ' + f.name);
       } catch (e) {
         console.error(e);
-        statusEl.textContent = 'Failed to initialize model: ' + (e.message || e);
+        log('Model init error: ' + (e.message || e));
+        statusEl.textContent = 'Failed to initialize model.';
       } finally {
         setBusy(false);
+        syncProcessEnabled();
       }
     });
+
+    // Quick environment diagnostics
+    if (typeof ort === 'undefined') {
+      statusEl.textContent = 'onnxruntime-web not loaded. (Check CDN or /lib/ path.)';
+      log('ERROR: ort is undefined (script failed to load).');
+    } else {
+      log('onnxruntime-web loaded. WebGPU available: ' + ('gpu' in navigator));
+    }
   </script>
 </body>
 </html>
