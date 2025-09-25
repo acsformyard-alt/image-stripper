@@ -6,13 +6,12 @@
   <title>Upper-Right Text Remover — LaMa (Local model, Cloudflare Pages)</title>
   <link rel="stylesheet" href="/styles.css" />
 
-  <script src="/lib/ort.webgpu.min.js"></script>
-  <script>
-  // Tell ORT where your .wasm files live (required under COEP/COOP)
+  <script src="/lib/ort.wasm.min.js"></script>
+<script>
   if (globalThis.ort?.env?.wasm) {
-    ort.env.wasm.wasmPaths = "/lib/";
-    // Optional: tweak threads for WASM performance
-    ort.env.wasm.numThreads = Math.max(2, (navigator.hardwareConcurrency || 8) >> 1);
+    ort.env.wasm.wasmPaths = "/lib/";    // REQUIRED so ORT finds its binaries
+    // Threads will only work after Section C (cross-origin isolation)
+    ort.env.wasm.numThreads = Math.max(2, (navigator.hardwareConcurrency||8) >> 1);
   }
 </script>
 
@@ -119,4 +118,5 @@
   </script>
 </body>
 </html>
+
 
