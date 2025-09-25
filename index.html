@@ -5,15 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Upper-Right Text Remover — LaMa (Local model, Cloudflare Pages)</title>
   <link rel="stylesheet" href="/styles.css" />
+
+  <!-- Use ONE of these: (A) CDN (simplest) OR (B) local /lib (works offline) -->
+  <!-- (A) CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/onnxruntime-web/1.22.0/ort.webgpu.min.js"></script>
 
+  <!-- (B) Local ORT (uncomment if you add /lib/)
+  <script src="/lib/ort.webgpu.min.js"></script>
+  <script>
+    if (globalThis.ort?.env?.wasm) { ort.env.wasm.wasmPaths = "/lib/"; }
+  </script>
+  -->
 </head>
 <body>
   <header>
     <h1>Upper-Right Text Remover (Local LaMa model)</h1>
     <p class="muted">
       Deployed on Cloudflare Pages. Select a <code>.onnx</code> model from your computer (not uploaded), then pick images.
-      WebGPU runs because the site is HTTPS; nothing leaves your device.
+      Nothing leaves your device. Defaults to WASM for stability; you can switch to WebGPU later.
     </p>
   </header>
 
@@ -46,7 +55,7 @@
   <pre id="log" class="log"></pre>
 
   <script type="module">
-    import { initLamaFromBuffer, inpaintUpperRightBatch, setExecutionProviders } from '/js/lama.js';
+    import { initLamaFromBuffer, setExecutionProviders, inpaintUpperRightOne, setLogger, setAssumeBGR } from '/js/lama.js';
     import { uiInit, setModelLabel, setBusy, wireImagePicker } from '/js/app.js';
 
     const statusEl   = document.getElementById('status');
@@ -56,15 +65,18 @@
     const logEl      = document.getElementById('log');
 
     const log = (m) => { logEl.textContent += m + "\n"; };
+    setLogger(log);
 
-    // Prefer WebGPU; ORT will fall back to WASM automatically if needed
+    // STABILITY FIRST: force WASM for now (you can change to ['webgpu','wasm'] later)
     setExecutionProviders(['wasm']);
+    if (globalThis.ort?.env?.wasm) {
+      // modest threading; adjust if you want more
+      ort.env.wasm.numThreads = Math.max(2, (navigator.hardwareConcurrency || 8) >> 1);
+    }
 
-    // Basic UX init
-    uiInit({ inpaintBatch: inpaintUpperRightBatch, statusEl });
+    uiInit({ inpaintOne: inpaintUpperRightOne, statusEl });
     wireImagePicker();
 
-    // Safety: enable Process only when both model + at least one image are selected
     const filesInput = document.getElementById('fileInput');
     const syncProcessEnabled = () => {
       const hasModel  = modelName.textContent !== 'No model selected';
@@ -73,7 +85,6 @@
     };
     filesInput.addEventListener('change', syncProcessEnabled);
 
-    // Manual model loading from local disk (no fetch, no 25MB limit)
     modelInput.addEventListener('change', async () => {
       const f = modelInput.files?.[0];
       if (!f) return;
@@ -96,14 +107,15 @@
       }
     });
 
-    // Quick environment diagnostics
     if (typeof ort === 'undefined') {
       statusEl.textContent = 'onnxruntime-web not loaded. (Check CDN or /lib/ path.)';
       log('ERROR: ort is undefined (script failed to load).');
     } else {
       log('onnxruntime-web loaded. WebGPU available: ' + ('gpu' in navigator));
     }
+
+    // If after trying these fixes you still get white, toggle BGR here:
+    // setAssumeBGR(true);
   </script>
 </body>
 </html>
-
