@@ -1,11 +1,17 @@
+import { maskUpperRightViaOCR as maskViaOCRDefault } from './lama.js';
+
 // UI glue: image selection pills, spinner, per-image progress, sequential processing
 let _statusEl, _inpaintOne;
+let _maskViaOCR = maskViaOCRDefault;
 
 let _avgInferMs = 1200; // rolling average for smoother progress
 
-export function uiInit({ inpaintOne, statusEl }) {
+export function uiInit({ inpaintOne, statusEl, maskUpperRightViaOCR }) {
   _statusEl = statusEl;
   _inpaintOne = inpaintOne;
+  if (typeof maskUpperRightViaOCR === 'function') {
+    _maskViaOCR = maskUpperRightViaOCR;
+  }
 
   const $files   = document.getElementById('fileInput');
   const $process = document.getElementById('processBtn');
@@ -42,6 +48,26 @@ export function uiInit({ inpaintOne, statusEl }) {
       setProgress(bar, pctEl, 0.05);
       _statusEl.textContent = `Processing ${i+1}/${bitmaps.length}…`;
 
+      const promptText = document.getElementById('prompt')?.value || '';
+      const useOcr = shouldUseOcr(promptText);
+
+      let externalMask = null;
+      if (useOcr) {
+        stageEl.textContent = 'detect text';
+        setProgress(bar, pctEl, 0.18);
+        try {
+          const srcCanvas = bitmapToCanvas(bitmaps[i].bmp);
+          externalMask = await _maskViaOCR(srcCanvas, {
+            zone: { x0: 0.6, y0: 0.0, x1: 1.0, y1: 0.4 },
+            dilatePx: 10,
+          });
+          setProgress(bar, pctEl, 0.26);
+        } catch (err) {
+          console.error('OCR mask generation failed; falling back to rectangle.', err);
+          externalMask = null;
+        }
+      }
+
       let running = true;
       const start = performance.now();
       const est   = Math.max(300, _avgInferMs);
@@ -49,7 +75,8 @@ export function uiInit({ inpaintOne, statusEl }) {
       const tick = () => {
         if (!running) return;
         const elapsed = performance.now() - start;
-        const frac = Math.min(0.95, (elapsed / est) * 0.85 + 0.10);
+        const base = useOcr ? 0.26 : 0.10;
+        const frac = Math.min(0.95, base + (elapsed / est) * 0.65);
         stageEl.textContent = 'inference';
         setProgress(bar, pctEl, frac);
         rafId = requestAnimationFrame(tick);
@@ -58,7 +85,7 @@ export function uiInit({ inpaintOne, statusEl }) {
 
       let result, timings;
       try {
-        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp));
+        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp, { externalMask }));
       } catch (e) {
         running = false; if (rafId) cancelAnimationFrame(rafId);
         stageEl.textContent = 'error';
@@ -145,4 +172,19 @@ function downloadCanvas(canv, originalName) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 500);
   }, 'image/png');
+}
+
+function shouldUseOcr(promptText) {
+  if (!promptText) return false;
+  const upperRight = /upper\s*right/i.test(promptText);
+  const removeText = /(remove|erase|clean).*?(text|number|digit)/i.test(promptText);
+  return upperRight && removeText;
+}
+
+function bitmapToCanvas(bmp) {
+  const c = document.createElement('canvas');
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  return c;
 }
