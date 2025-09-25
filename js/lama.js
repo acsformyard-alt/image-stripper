@@ -104,7 +104,11 @@ export async function inpaintUpperRightOne(bmp) {
   }
   // Mask: 1 = hole (fill), 0 = keep
   for (let i=0, px=0; i<mData.length; i+=4, px++){
-    const v = (mData[i] | mData[i+1] | mData[i+2] | mData[i+3]) ? 1.0 : 0.0;
+    // Ignore the alpha channel when detecting mask coverage. Letterboxing fills
+    // the unused area with opaque black pixels (alpha = 255), which previously
+    // caused the mask to expand to the full frame. Only the RGB channels carry
+    // the user-selected mask information, so rely on those values exclusively.
+    const v = (mData[i] | mData[i+1] | mData[i+2]) ? 1.0 : 0.0;
     const y = Math.floor(px/target), x = px % target, o = y*target + x;
     maskTensor.data[o] = v;
   }
