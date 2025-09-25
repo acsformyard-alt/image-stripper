@@ -1,11 +1,22 @@
+import { maskUpperRightViaOCR as defaultMaskUpperRightViaOCR } from './lama.js';
+
 // UI glue: image selection pills, spinner, per-image progress, sequential processing
 let _statusEl, _inpaintOne;
+let _ocrMaskBuilder = defaultMaskUpperRightViaOCR;
 
 let _avgInferMs = 1200; // rolling average for smoother progress
+const PROMPT_UPPER_RIGHT = /upper\s*right/i;
+const PROMPT_REMOVE_TEXT = /(remove|erase|clean).*(text|number|digit)/i;
+const DEFAULT_OCR_ZONE = { x0: 0.6, y0: 0.0, x1: 1.0, y1: 0.4 };
 
-export function uiInit({ inpaintOne, statusEl }) {
+export function uiInit({ inpaintOne, statusEl, ocrMask }) {
   _statusEl = statusEl;
   _inpaintOne = inpaintOne;
+  if (typeof ocrMask === 'function') {
+    _ocrMaskBuilder = ocrMask;
+  } else {
+    _ocrMaskBuilder = defaultMaskUpperRightViaOCR;
+  }
 
   const $files   = document.getElementById('fileInput');
   const $process = document.getElementById('processBtn');
@@ -42,10 +53,34 @@ export function uiInit({ inpaintOne, statusEl }) {
       setProgress(bar, pctEl, 0.05);
       _statusEl.textContent = `Processing ${i+1}/${bitmaps.length}…`;
 
+      const promptValue = document.getElementById('prompt')?.value || '';
+      const wantsUpperRight = PROMPT_UPPER_RIGHT.test(promptValue);
+      PROMPT_UPPER_RIGHT.lastIndex = 0;
+      const wantsRemoveText = PROMPT_REMOVE_TEXT.test(promptValue);
+      PROMPT_REMOVE_TEXT.lastIndex = 0;
+      const shouldUseOCR = wantsUpperRight && wantsRemoveText && typeof _ocrMaskBuilder === 'function';
+
+      let externalMask;
+      if (shouldUseOCR) {
+        stageEl.textContent = 'detect text';
+        setProgress(bar, pctEl, 0.15);
+        try {
+          const srcCanvas = bitmapToCanvas(bitmaps[i].bmp);
+          externalMask = await _ocrMaskBuilder(srcCanvas, { zone: DEFAULT_OCR_ZONE, dilatePx: 10 });
+          setProgress(bar, pctEl, 0.25);
+        } catch (err) {
+          console.error('OCR mask generation failed, falling back to rectangle.', err);
+          externalMask = undefined;
+          setProgress(bar, pctEl, 0.15);
+        }
+      } else {
+        setProgress(bar, pctEl, 0.10);
+      }
+
       let running = true;
+      let rafId;
       const start = performance.now();
       const est   = Math.max(300, _avgInferMs);
-      let rafId;
       const tick = () => {
         if (!running) return;
         const elapsed = performance.now() - start;
@@ -58,7 +93,7 @@ export function uiInit({ inpaintOne, statusEl }) {
 
       let result, timings;
       try {
-        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp));
+        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp, { externalMask }));
       } catch (e) {
         running = false; if (rafId) cancelAnimationFrame(rafId);
         stageEl.textContent = 'error';
@@ -135,6 +170,14 @@ function setProgress(bar, pctEl, v) {
   const clamped = Math.max(0, Math.min(1, v));
   bar.value = clamped;
   pctEl.textContent = Math.round(clamped * 100) + '%';
+}
+
+function bitmapToCanvas(bmp) {
+  const c = document.createElement('canvas');
+  c.width = bmp.width;
+  c.height = bmp.height;
+  c.getContext('2d').drawImage(bmp, 0, 0);
+  return c;
 }
 
 function downloadCanvas(canv, originalName) {
