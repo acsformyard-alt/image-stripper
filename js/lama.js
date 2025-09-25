@@ -84,7 +84,7 @@ export async function inpaintUpperRightOne(bmp) {
   // Preprocess to _target×_target
   const target = _target;
   const { prep, invMap }   = letterbox(srcCanvas, target, target);
-  const { prep: prepMask } = letterbox(maskCanvas, target, target);
+  const { prep: prepMask } = letterbox(maskCanvas, target, target, { transparent: true });
 
   const imgData = prep.getContext('2d').getImageData(0, 0, target, target).data;
   const mData   = prepMask.getContext('2d').getImageData(0, 0, target, target).data;
@@ -103,11 +103,14 @@ export async function inpaintUpperRightOne(bmp) {
     imgTensor.data[2*target*target + o] = b;
   }
   // Mask: 1 = hole (fill), 0 = keep
+  let maskSum = 0;
   for (let i=0, px=0; i<mData.length; i+=4, px++){
-    const v = (mData[i] | mData[i+1] | mData[i+2] | mData[i+3]) ? 1.0 : 0.0;
+    const v = (mData[i] | mData[i+1] | mData[i+2]) ? 1.0 : 0.0;
     const y = Math.floor(px/target), x = px % target, o = y*target + x;
     maskTensor.data[o] = v;
+    maskSum += v;
   }
+  _logger(`mask sum: ${maskSum}`);
 
   // Debug minima/maxima
   // _logger(`img min/max: ${minmax(imgTensor.data)} mask sum: ${sum(maskTensor.data)}`);
@@ -143,7 +146,7 @@ export async function inpaintUpperRightOne(bmp) {
 /* ---------- helpers ---------- */
 function drawBitmapToCanvas(bmp){ const c=document.createElement('canvas'); c.width=bmp.width; c.height=bmp.height; c.getContext('2d').drawImage(bmp,0,0); return c; }
 function buildUpperRightMask(canvas, frac){ const c=document.createElement('canvas'); c.width=canvas.width; c.height=canvas.height; const g=c.getContext('2d'); const rw=Math.round(canvas.width*frac.w); const rh=Math.round(canvas.height*frac.h); const rx=canvas.width-rw; g.clearRect(0,0,c.width,c.height); g.fillStyle='#fff'; g.fillRect(rx,0,rw,rh); return c; }
-function letterbox(srcCanvas,W,H){ const sw=srcCanvas.width, sh=srcCanvas.height; const scale=Math.min(W/sw,H/sh); const nw=Math.round(sw*scale), nh=Math.round(sh*scale); const dx=Math.floor((W-nw)/2), dy=Math.floor((H-nh)/2); const c=document.createElement('canvas'); c.width=W; c.height=H; const g=c.getContext('2d'); g.fillStyle='#000'; g.fillRect(0,0,W,H); g.drawImage(srcCanvas,0,0,sw,sh,dx,dy,nw,nh); const inv=(square)=>{ const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh; const tg=tmp.getContext('2d'); const crop=document.createElement('canvas'); crop.width=nw; crop.height=nh; crop.getContext('2d').drawImage(square,dx,dy,nw,nh,0,0,nw,nh); tg.drawImage(crop,0,0,nw,nh,0,0,sw,sh); return tmp; }; return { prep:c, invMap:inv }; }
+function letterbox(srcCanvas,W,H,options={}){ const sw=srcCanvas.width, sh=srcCanvas.height; const scale=Math.min(W/sw,H/sh); const nw=Math.round(sw*scale), nh=Math.round(sh*scale); const dx=Math.floor((W-nw)/2), dy=Math.floor((H-nh)/2); const c=document.createElement('canvas'); c.width=W; c.height=H; const g=c.getContext('2d'); if(options.transparent){ g.clearRect(0,0,W,H); } else { g.fillStyle=options.fillStyle||'#000'; g.fillRect(0,0,W,H); } g.drawImage(srcCanvas,0,0,sw,sh,dx,dy,nw,nh); const inv=(square)=>{ const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh; const tg=tmp.getContext('2d'); const crop=document.createElement('canvas'); crop.width=nw; crop.height=nh; crop.getContext('2d').drawImage(square,dx,dy,nw,nh,0,0,nw,nh); tg.drawImage(crop,0,0,nw,nh,0,0,sw,sh); return tmp; }; return { prep:c, invMap:inv }; }
 function nchwToCanvas(data,H,W){ const c=document.createElement('canvas'); c.width=W; c.height=H; const g=c.getContext('2d'); const img=g.createImageData(W,H); const plane=H*W; for(let y=0;y<H;y++){ for(let x=0;x<W;x++){ const o=y*W+x; // [-1,1] -> [0,1]
       const r=clamp01((data[0*plane+o]+1)*0.5); const gg=clamp01((data[1*plane+o]+1)*0.5); const b=clamp01((data[2*plane+o]+1)*0.5);
       const i=o*4; img.data[i]=r*255|0; img.data[i+1]=gg*255|0; img.data[i+2]=b*255|0; img.data[i+3]=255; } } g.putImageData(img,0,0); return c; }
