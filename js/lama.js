@@ -27,14 +27,26 @@ export async function initLamaFromBuffer(bufferUint8, executionProviders = _exec
 }
 
 function pickEP(req) {
-  const avail = ort.getAvailableExecutionProvider(); // 'webgpu' when available
+  // We can't rely on ort.getAvailableExecutionProvider(). Instead:
+  // - 'webgpu' is usable only if (a) browser exposes navigator.gpu AND
+  //   (b) you loaded the WebGPU entry (ort.webgpu.min.js exposes ort.webgpu).
+  // - 'wasm' is always valid if you loaded any ort.*.js and have wasm binaries.
   const out = [];
   for (const p of req) {
-    if (p === 'webgpu' && avail === 'webgpu') out.push('webgpu');
-    if (p === 'wasm') out.push('wasm');
+    if (p === 'webgpu') {
+      if (typeof navigator !== 'undefined' && 'gpu' in navigator && (ort && ort.webgpu)) {
+        out.push('webgpu');
+      }
+      continue;
+    }
+    if (p === 'wasm') {
+      out.push('wasm');
+      continue;
+    }
   }
   return out.length ? out : ['wasm'];
 }
+
 
 function inspectModel(){
   if(!session) return;
@@ -138,3 +150,4 @@ function nchwToCanvas(data,H,W){ const c=document.createElement('canvas'); c.wid
 const clamp01 = v => v<0?0:v>1?1:v;
 // const minmax = (a)=>{ let mi=Infinity, ma=-Infinity; for(const v of a){ if(v<mi)mi=v; if(v>ma)ma=v; } return [mi,ma]; }
 // const sum = (a)=>{ let s=0; for(const v of a) s+=v; return s; }
+
