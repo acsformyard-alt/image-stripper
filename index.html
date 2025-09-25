@@ -27,6 +27,8 @@
 
   <main>
     <section class="controls">
+      <input id="prompt" class="prompt" value="Remove the text and numbers from the upper right of the image" />
+
       <label class="btn">
         <input id="modelInput" type="file" accept=".onnx" />
         Choose LaMa model (.onnx)
@@ -53,8 +55,9 @@
 
   <pre id="log" class="log"></pre>
 
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script type="module">
-    import { initLamaFromBuffer, setExecutionProviders, inpaintUpperRightOne, setLogger, setAssumeBGR } from '/js/lama.js';
+    import { initLamaFromBuffer, setExecutionProviders, inpaintUpperRightOne, setLogger, setAssumeBGR, maskUpperRightViaOCR } from '/js/lama.js';
     import { uiInit, setModelLabel, setBusy, wireImagePicker } from '/js/app.js';
 
     const statusEl   = document.getElementById('status');
@@ -73,7 +76,7 @@
       ort.env.wasm.numThreads = Math.max(2, (navigator.hardwareConcurrency || 8) >> 1);
     }
 
-    uiInit({ inpaintOne: inpaintUpperRightOne, statusEl });
+    uiInit({ inpaintOne: inpaintUpperRightOne, statusEl, maskBuilder: maskUpperRightViaOCR });
     wireImagePicker();
 
     const filesInput = document.getElementById('fileInput');

@@ -74,12 +74,23 @@ function inspectModel(){
 const UPPER_RIGHT_FRACTION = { w: 0.28, h: 0.24 };
 
 /** Process a single bitmap and return { canvas, timings: {pre, infer, post} } */
-export async function inpaintUpperRightOne(bmp) {
+export async function inpaintUpperRightOne(bmp, opt = {}) {
   if (!session) throw new Error('Model not initialized. Pick the .onnx first.');
   const t0 = performance.now();
 
   const srcCanvas  = drawBitmapToCanvas(bmp);
-  const maskCanvas = buildUpperRightMask(srcCanvas, UPPER_RIGHT_FRACTION);
+  let maskCanvas = opt?.externalMask || null;
+  if (maskCanvas) {
+    if (maskCanvas.width !== srcCanvas.width || maskCanvas.height !== srcCanvas.height) {
+      const resized = document.createElement('canvas');
+      resized.width = srcCanvas.width;
+      resized.height = srcCanvas.height;
+      resized.getContext('2d').drawImage(maskCanvas, 0, 0, maskCanvas.width, maskCanvas.height, 0, 0, resized.width, resized.height);
+      maskCanvas = resized;
+    }
+  } else {
+    maskCanvas = buildUpperRightMask(srcCanvas, UPPER_RIGHT_FRACTION);
+  }
 
   // Preprocess to _target×_target
   const target = _target;
@@ -140,6 +151,66 @@ export async function inpaintUpperRightOne(bmp) {
   };
 }
 
+export async function maskUpperRightViaOCR(canvas, opts = {}) {
+  if (!canvas) throw new Error('maskUpperRightViaOCR requires a canvas.');
+  const zone = opts.zone || { x0: 0.60, y0: 0.00, x1: 1.00, y1: 0.40 };
+  const dilatePx = Number.isFinite(opts.dilatePx) ? Math.max(0, Math.round(opts.dilatePx)) : 10;
+
+  if (!globalThis.Tesseract || typeof globalThis.Tesseract.recognize !== 'function') {
+    throw new Error('Tesseract.js not loaded.');
+  }
+
+  const maxWidth = 1600;
+  const scale = canvas.width > maxWidth ? (maxWidth / canvas.width) : 1;
+  const downW = Math.max(1, Math.round(canvas.width * scale));
+  const downH = Math.max(1, Math.round(canvas.height * scale));
+
+  const tmp = document.createElement('canvas');
+  tmp.width = downW;
+  tmp.height = downH;
+  tmp.getContext('2d').drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, downW, downH);
+
+  const { data } = await globalThis.Tesseract.recognize(tmp, 'eng');
+  const words = Array.isArray(data?.words) ? data.words : [];
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = canvas.width;
+  maskCanvas.height = canvas.height;
+  const maskCtx = maskCanvas.getContext('2d');
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  maskCtx.fillStyle = '#fff';
+
+  const invScaleX = canvas.width / downW;
+  const invScaleY = canvas.height / downH;
+  let boxes = 0;
+
+  for (const word of words) {
+    const bbox = word?.bbox;
+    if (!bbox) continue;
+    const cxNorm = ((bbox.x0 + bbox.x1) * 0.5) / downW;
+    const cyNorm = ((bbox.y0 + bbox.y1) * 0.5) / downH;
+    if (cxNorm < zone.x0 || cxNorm > zone.x1 || cyNorm < zone.y0 || cyNorm > zone.y1) continue;
+
+    const x = Math.max(0, Math.floor(bbox.x0 * invScaleX));
+    const y = Math.max(0, Math.floor(bbox.y0 * invScaleY));
+    const w = Math.max(1, Math.ceil((bbox.x1 - bbox.x0) * invScaleX));
+    const h = Math.max(1, Math.ceil((bbox.y1 - bbox.y0) * invScaleY));
+    maskCtx.fillRect(x, y, w, h);
+    boxes++;
+  }
+
+  if (!boxes) {
+    _logger('OCR found no text in the target zone; falling back to rectangle mask.');
+    return buildUpperRightMask(canvas, UPPER_RIGHT_FRACTION);
+  }
+
+  if (dilatePx > 0) {
+    dilateMask(maskCanvas, dilatePx);
+  }
+
+  return maskCanvas;
+}
+
 /* ---------- helpers ---------- */
 function drawBitmapToCanvas(bmp){ const c=document.createElement('canvas'); c.width=bmp.width; c.height=bmp.height; c.getContext('2d').drawImage(bmp,0,0); return c; }
 function buildUpperRightMask(canvas, frac){ const c=document.createElement('canvas'); c.width=canvas.width; c.height=canvas.height; const g=c.getContext('2d'); const rw=Math.round(canvas.width*frac.w); const rh=Math.round(canvas.height*frac.h); const rx=canvas.width-rw; g.clearRect(0,0,c.width,c.height); g.fillStyle='#fff'; g.fillRect(rx,0,rw,rh); return c; }
@@ -148,6 +219,41 @@ function nchwToCanvas(data,H,W){ const c=document.createElement('canvas'); c.wid
       const r=clamp01((data[0*plane+o]+1)*0.5); const gg=clamp01((data[1*plane+o]+1)*0.5); const b=clamp01((data[2*plane+o]+1)*0.5);
       const i=o*4; img.data[i]=r*255|0; img.data[i+1]=gg*255|0; img.data[i+2]=b*255|0; img.data[i+3]=255; } } g.putImageData(img,0,0); return c; }
 const clamp01 = v => v<0?0:v>1?1:v;
+function dilateMask(canvas, radius){
+  const ctx = canvas.getContext('2d');
+  const { width: W, height: H } = canvas;
+  const img = ctx.getImageData(0, 0, W, H);
+  const src = img.data;
+  const bin = new Uint8Array(W * H);
+  for (let i = 0, px = 0; i < src.length; i += 4, px++) {
+    if (src[i] || src[i+1] || src[i+2] || src[i+3]) bin[px] = 1;
+  }
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < H; y++) {
+    const yMin = Math.max(0, y - radius);
+    const yMax = Math.min(H - 1, y + radius);
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      let filled = bin[idx] === 1;
+      if (!filled) {
+        const xMin = Math.max(0, x - radius);
+        const xMax = Math.min(W - 1, x + radius);
+        for (let yy = yMin; yy <= yMax && !filled; yy++) {
+          const base = yy * W;
+          for (let xx = xMin; xx <= xMax; xx++) {
+            if (bin[base + xx]) { filled = true; break; }
+          }
+        }
+      }
+      if (filled) {
+        const o = idx * 4;
+        out[o] = out[o+1] = out[o+2] = 255;
+        out[o+3] = 255;
+      }
+    }
+  }
+  ctx.putImageData(new ImageData(out, W, H), 0, 0);
+}
 // const minmax = (a)=>{ let mi=Infinity, ma=-Infinity; for(const v of a){ if(v<mi)mi=v; if(v>ma)ma=v; } return [mi,ma]; }
 // const sum = (a)=>{ let s=0; for(const v of a) s+=v; return s; }
 
