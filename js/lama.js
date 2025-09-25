@@ -73,13 +73,72 @@ function inspectModel(){
 // Tune if your corner text area differs
 const UPPER_RIGHT_FRACTION = { w: 0.28, h: 0.24 };
 
+/**
+ * Build a mask canvas by detecting OCR boxes within the upper-right zone.
+ * If no boxes are detected, falls back to the default rectangle.
+ */
+export async function maskUpperRightViaOCR(canvas, opts = {}) {
+  if (!canvas) throw new Error('Canvas required for OCR mask.');
+  const zone = opts.zone || { x0: 0.60, y0: 0.00, x1: 1.00, y1: 0.40 };
+  const dilatePx = Number.isFinite(opts.dilatePx) ? Math.max(0, Math.round(opts.dilatePx)) : 10;
+
+  const engine = globalThis.Tesseract;
+  if (!engine || typeof engine.recognize !== 'function') {
+    throw new Error('Tesseract.js not loaded');
+  }
+
+  const down = downscaleForOCR(canvas, 1600);
+  const result = await engine.recognize(down.canvas, 'eng');
+  const words = Array.isArray(result?.data?.words) ? result.data.words : [];
+
+  const scaleX = canvas.width / down.canvas.width;
+  const scaleY = canvas.height / down.canvas.height;
+
+  const mask = document.createElement('canvas');
+  mask.width = canvas.width;
+  mask.height = canvas.height;
+  const g = mask.getContext('2d');
+  g.clearRect(0, 0, mask.width, mask.height);
+
+  let matches = 0;
+  for (const word of words) {
+    const box = word?.bbox || word?.boundingBox;
+    if (!box) continue;
+    const cx = (box.x0 + box.x1) * 0.5;
+    const cy = (box.y0 + box.y1) * 0.5;
+    const nx = cx / down.canvas.width;
+    const ny = cy / down.canvas.height;
+    if (nx < zone.x0 || nx > zone.x1 || ny < zone.y0 || ny > zone.y1) continue;
+    const x = Math.max(0, Math.floor(box.x0 * scaleX));
+    const y = Math.max(0, Math.floor(box.y0 * scaleY));
+    const w = Math.ceil((box.x1 - box.x0) * scaleX);
+    const h = Math.ceil((box.y1 - box.y0) * scaleY);
+    if (w <= 0 || h <= 0) continue;
+    g.fillStyle = '#fff';
+    g.fillRect(x, y, w, h);
+    matches++;
+  }
+
+  _logger(`OCR zone matches: ${matches}`);
+
+  if (!matches) {
+    return buildUpperRightMask(canvas, UPPER_RIGHT_FRACTION);
+  }
+
+  if (dilatePx > 0) {
+    dilateMask(mask, dilatePx);
+  }
+
+  return mask;
+}
+
 /** Process a single bitmap and return { canvas, timings: {pre, infer, post} } */
-export async function inpaintUpperRightOne(bmp) {
+export async function inpaintUpperRightOne(bmp, opt = {}) {
   if (!session) throw new Error('Model not initialized. Pick the .onnx first.');
   const t0 = performance.now();
 
   const srcCanvas  = drawBitmapToCanvas(bmp);
-  const maskCanvas = buildUpperRightMask(srcCanvas, UPPER_RIGHT_FRACTION);
+  const maskCanvas = pickMaskCanvas(opt.externalMask, srcCanvas);
 
   // Preprocess to _target×_target
   const target = _target;
@@ -141,8 +200,24 @@ export async function inpaintUpperRightOne(bmp) {
 }
 
 /* ---------- helpers ---------- */
+function pickMaskCanvas(externalMask, srcCanvas){
+  if (externalMask && externalMask.width && externalMask.height) {
+    if (externalMask.width === srcCanvas.width && externalMask.height === srcCanvas.height) {
+      return externalMask;
+    }
+    const scaled = document.createElement('canvas');
+    scaled.width = srcCanvas.width;
+    scaled.height = srcCanvas.height;
+    scaled.getContext('2d').drawImage(externalMask, 0, 0, externalMask.width, externalMask.height, 0, 0, scaled.width, scaled.height);
+    return scaled;
+  }
+  return buildUpperRightMask(srcCanvas, UPPER_RIGHT_FRACTION);
+}
+
 function drawBitmapToCanvas(bmp){ const c=document.createElement('canvas'); c.width=bmp.width; c.height=bmp.height; c.getContext('2d').drawImage(bmp,0,0); return c; }
 function buildUpperRightMask(canvas, frac){ const c=document.createElement('canvas'); c.width=canvas.width; c.height=canvas.height; const g=c.getContext('2d'); const rw=Math.round(canvas.width*frac.w); const rh=Math.round(canvas.height*frac.h); const rx=canvas.width-rw; g.clearRect(0,0,c.width,c.height); g.fillStyle='#fff'; g.fillRect(rx,0,rw,rh); return c; }
+function downscaleForOCR(canvas, maxWidth){ const scale = canvas.width>maxWidth ? maxWidth/canvas.width : 1; const w = Math.max(1, Math.round(canvas.width*scale)); const h = Math.max(1, Math.round(canvas.height*scale)); const tmp = document.createElement('canvas'); tmp.width=w; tmp.height=h; tmp.getContext('2d').drawImage(canvas,0,0,w,h); return { canvas: tmp, scale }; }
+function dilateMask(maskCanvas, radius){ const r=Math.max(1, Math.round(radius)); const w=maskCanvas.width, h=maskCanvas.height; const ctx=maskCanvas.getContext('2d'); const src=ctx.getImageData(0,0,w,h); const dst=ctx.createImageData(w,h); const s=src.data, d=dst.data; for(let y=0;y<h;y++){ for(let x=0;x<w;x++){ let hit=false; for(let dy=-r; dy<=r && !hit; dy++){ const yy=y+dy; if(yy<0||yy>=h) continue; const row=yy*w; for(let dx=-r; dx<=r; dx++){ const xx=x+dx; if(xx<0||xx>=w) continue; const idx=(row+xx)*4; if(s[idx]||s[idx+1]||s[idx+2]||s[idx+3]){ hit=true; break; } } } if(hit){ const o=(y*w+x)*4; d[o]=d[o+1]=d[o+2]=d[o+3]=255; } } } ctx.putImageData(dst,0,0); }
 function letterbox(srcCanvas,W,H){ const sw=srcCanvas.width, sh=srcCanvas.height; const scale=Math.min(W/sw,H/sh); const nw=Math.round(sw*scale), nh=Math.round(sh*scale); const dx=Math.floor((W-nw)/2), dy=Math.floor((H-nh)/2); const c=document.createElement('canvas'); c.width=W; c.height=H; const g=c.getContext('2d'); g.fillStyle='#000'; g.fillRect(0,0,W,H); g.drawImage(srcCanvas,0,0,sw,sh,dx,dy,nw,nh); const inv=(square)=>{ const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh; const tg=tmp.getContext('2d'); const crop=document.createElement('canvas'); crop.width=nw; crop.height=nh; crop.getContext('2d').drawImage(square,dx,dy,nw,nh,0,0,nw,nh); tg.drawImage(crop,0,0,nw,nh,0,0,sw,sh); return tmp; }; return { prep:c, invMap:inv }; }
 function nchwToCanvas(data,H,W){ const c=document.createElement('canvas'); c.width=W; c.height=H; const g=c.getContext('2d'); const img=g.createImageData(W,H); const plane=H*W; for(let y=0;y<H;y++){ for(let x=0;x<W;x++){ const o=y*W+x; // [-1,1] -> [0,1]
       const r=clamp01((data[0*plane+o]+1)*0.5); const gg=clamp01((data[1*plane+o]+1)*0.5); const b=clamp01((data[2*plane+o]+1)*0.5);
