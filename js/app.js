@@ -1,11 +1,14 @@
 // UI glue: image selection pills, spinner, per-image progress, sequential processing
-let _statusEl, _inpaintOne;
+import { maskUpperRightViaOCR as defaultMaskUpperRightViaOCR } from './lama.js';
+
+let _statusEl, _inpaintOne, _maskBuilder;
 
 let _avgInferMs = 1200; // rolling average for smoother progress
 
-export function uiInit({ inpaintOne, statusEl }) {
+export function uiInit({ inpaintOne, statusEl, maskBuilder = defaultMaskUpperRightViaOCR }) {
   _statusEl = statusEl;
   _inpaintOne = inpaintOne;
+  _maskBuilder = maskBuilder;
 
   const $files   = document.getElementById('fileInput');
   const $process = document.getElementById('processBtn');
@@ -34,6 +37,11 @@ export function uiInit({ inpaintOne, statusEl }) {
     $gallery.innerHTML = '';
     const tiles = bitmaps.map(b => addTile(b.name, $gallery));
 
+    const promptValue = (document.getElementById('prompt')?.value || '').trim();
+    const matchesUpperRight = /upper\s*right/i.test(promptValue);
+    const matchesRemoval = /(remove|erase|clean).*(text|number|digit)/i.test(promptValue);
+    const shouldUseOCR = matchesUpperRight && matchesRemoval;
+
     for (let i = 0; i < bitmaps.length; i++) {
       const tile = tiles[i];
       const { canv, btn, bar, stageEl, pctEl } = tile;
@@ -42,8 +50,26 @@ export function uiInit({ inpaintOne, statusEl }) {
       setProgress(bar, pctEl, 0.05);
       _statusEl.textContent = `Processing ${i+1}/${bitmaps.length}…`;
 
+      let externalMask = null;
+      if (shouldUseOCR) {
+        stageEl.textContent = 'detect text';
+        setProgress(bar, pctEl, 0.18);
+        try {
+          const srcCanvas = document.createElement('canvas');
+          const bmp = bitmaps[i].bmp;
+          srcCanvas.width = bmp.width;
+          srcCanvas.height = bmp.height;
+          srcCanvas.getContext('2d').drawImage(bmp, 0, 0);
+          externalMask = await _maskBuilder(srcCanvas, { zone: { x0: 0.6, y0: 0.0, x1: 1.0, y1: 0.4 }, dilatePx: 10 });
+        } catch (err) {
+          console.error('OCR mask generation failed; falling back to fixed corner mask.', err);
+          externalMask = null;
+          stageEl.textContent = 'preprocess';
+          setProgress(bar, pctEl, 0.08);
+        }
+      }
+
       let running = true;
-      const start = performance.now();
       const est   = Math.max(300, _avgInferMs);
       let rafId;
       const tick = () => {
@@ -54,11 +80,13 @@ export function uiInit({ inpaintOne, statusEl }) {
         setProgress(bar, pctEl, frac);
         rafId = requestAnimationFrame(tick);
       };
+      const start = performance.now();
       rafId = requestAnimationFrame(tick);
 
       let result, timings;
       try {
-        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp));
+        const opts = externalMask ? { externalMask } : undefined;
+        ({ canvas: result, timings } = await _inpaintOne(bitmaps[i].bmp, opts));
       } catch (e) {
         running = false; if (rafId) cancelAnimationFrame(rafId);
         stageEl.textContent = 'error';
